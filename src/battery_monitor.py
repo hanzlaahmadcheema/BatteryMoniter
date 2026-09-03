@@ -44,6 +44,52 @@ except ImportError:
     tk = None
     messagebox = None
 
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+REG_STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+REG_APP_NAME = "HABatteryMonitor"
+
+
+def is_startup_enabled() -> bool:
+    """Check if application is registered to run on Windows startup."""
+    if os.name != "nt" or winreg is None:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, REG_APP_NAME)
+            return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def set_startup_enabled(enable: bool) -> bool:
+    """Enable or disable launching application on Windows startup."""
+    if os.name != "nt" or winreg is None:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enable:
+                if getattr(sys, "frozen", False):
+                    cmd = f'"{sys.executable}"'
+                else:
+                    launcher_path = Path(__file__).parent / "app_launcher.py"
+                    cmd = f'"{sys.executable}" "{launcher_path}"'
+                winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, cmd)
+                log_message("Windows startup registry key registered", "INFO")
+            else:
+                try:
+                    winreg.DeleteValue(key, REG_APP_NAME)
+                    log_message("Windows startup registry key removed", "INFO")
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception as e:
+        log_message(f"Failed to update Windows startup registry key: {e}", "ERROR")
+        return False
+
 
 BEEP_FREQUENCY = 1000
 BEEP_DURATION = 700
@@ -483,6 +529,23 @@ def check_now(icon=None, item=None):
         log_message(f"Check Now failed: {e}", "ERROR")
 
 
+def toggle_startup_state(icon=None, item=None):
+    """Toggle Windows startup registration."""
+    try:
+        current = is_startup_enabled()
+        new_state = not current
+        set_startup_enabled(new_state)
+        advanced = app_settings.setdefault("advanced", {})
+        advanced["start_with_windows"] = new_state
+        save_settings()
+        msg = "Start with Windows enabled" if new_state else "Start with Windows disabled"
+        log_message(msg, "INFO")
+        refresh_tray_menu()
+        show_notification(msg, alert_level="info")
+    except Exception as e:
+        log_message(f"Failed to toggle startup state: {e}", "ERROR")
+
+
 def refresh_tray_menu():
     """Rebuild the tray menu to reflect current state (e.g., pause/resume label)."""
     global tray_icon
@@ -491,10 +554,13 @@ def refresh_tray_menu():
     try:
         is_paused = app_settings.get("advanced", {}).get("paused", False)
         pause_label = "Resume Monitoring" if is_paused else "Pause Monitoring"
+        is_startup = is_startup_enabled()
+        startup_label = "Disable Start with Windows" if is_startup else "Enable Start with Windows"
         new_menu = pystray.Menu(
             pystray.MenuItem("Check Now", check_now),
             pystray.MenuItem("Show Status", lambda icon, item: show_status()),
             pystray.MenuItem(pause_label, toggle_pause_state),
+            pystray.MenuItem(startup_label, toggle_startup_state),
             pystray.MenuItem("Settings", open_settings_gui),
             pystray.MenuItem("Quit", quit_app)
         )
@@ -511,10 +577,13 @@ def setup_tray():
     icon_image = create_tray_image(0, False)
     if icon_image is None:
         return
+    is_startup = is_startup_enabled()
+    startup_label = "Disable Start with Windows" if is_startup else "Enable Start with Windows"
     menu = pystray.Menu(
         pystray.MenuItem("Check Now", check_now),
         pystray.MenuItem("Show Status", lambda icon, item: show_status()),
         pystray.MenuItem("Pause Monitoring", toggle_pause_state),
+        pystray.MenuItem(startup_label, toggle_startup_state),
         pystray.MenuItem("Settings", open_settings_gui),
         pystray.MenuItem("Quit", quit_app)
     )
