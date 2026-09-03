@@ -44,6 +44,7 @@ except ImportError:
     tk = None
     messagebox = None
 
+import shutil
 try:
     import winreg
 except ImportError:
@@ -53,42 +54,118 @@ REG_STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_APP_NAME = "HABatteryMonitor"
 
 
+def get_startup_file_path() -> Optional[Path]:
+    """Get platform-specific autostart file path for Linux and macOS."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "LaunchAgents" / "com.habatterymonitor.plist"
+    elif sys.platform.startswith("linux") or os.name != "nt":
+        return Path.home() / ".config" / "autostart" / "ha_battery_monitor.desktop"
+    return None
+
+
 def is_startup_enabled() -> bool:
-    """Check if application is registered to run on Windows startup."""
-    if os.name != "nt" or winreg is None:
-        return False
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_READ) as key:
-            winreg.QueryValueEx(key, REG_APP_NAME)
-            return True
-    except (FileNotFoundError, OSError):
-        return False
+    """Check if application is registered to run on system startup across Windows, Linux, macOS."""
+    if os.name == "nt":
+        if winreg is None:
+            return False
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_READ) as key:
+                winreg.QueryValueEx(key, REG_APP_NAME)
+                return True
+        except (FileNotFoundError, OSError):
+            return False
+    else:
+        path = get_startup_file_path()
+        return path.exists() if path else False
 
 
 def set_startup_enabled(enable: bool) -> bool:
-    """Enable or disable launching application on Windows startup."""
-    if os.name != "nt" or winreg is None:
-        return False
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            if enable:
-                if getattr(sys, "frozen", False):
-                    cmd = f'"{sys.executable}"'
+    """Enable or disable launching application on system startup across Windows, Linux, macOS."""
+    launcher_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_launcher.py")
+    if os.name == "nt":
+        if winreg is None:
+            return False
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                if enable:
+                    if getattr(sys, "frozen", False):
+                        cmd = f'"{sys.executable}"'
+                    else:
+                        cmd = f'"{sys.executable}" "{launcher_path}"'
+                    winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, cmd)
+                    log_message("Windows startup registry key registered", "INFO")
                 else:
-                    launcher_path = Path(__file__).parent / "app_launcher.py"
-                    cmd = f'"{sys.executable}" "{launcher_path}"'
-                winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, cmd)
-                log_message("Windows startup registry key registered", "INFO")
+                    try:
+                        winreg.DeleteValue(key, REG_APP_NAME)
+                        log_message("Windows startup registry key removed", "INFO")
+                    except FileNotFoundError:
+                        pass
+            return True
+        except Exception as e:
+            log_message(f"Failed to update Windows startup registry key: {e}", "ERROR")
+            return False
+    elif sys.platform == "darwin":
+        plist_path = get_startup_file_path()
+        if not plist_path:
+            return False
+        try:
+            if enable:
+                plist_path.parent.mkdir(parents=True, exist_ok=True)
+                args_block = f"<string>{sys.executable}</string>"
+                if not getattr(sys, "frozen", False):
+                    args_block += f"\n        <string>{launcher_path}</string>"
+                plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.habatterymonitor</string>
+    <key>ProgramArguments</key>
+    <array>
+        {args_block}
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>"""
+                plist_path.write_text(plist_content, encoding="utf-8")
+                log_message("macOS LaunchAgent registered", "INFO")
             else:
-                try:
-                    winreg.DeleteValue(key, REG_APP_NAME)
-                    log_message("Windows startup registry key removed", "INFO")
-                except FileNotFoundError:
-                    pass
-        return True
-    except Exception as e:
-        log_message(f"Failed to update Windows startup registry key: {e}", "ERROR")
-        return False
+                if plist_path.exists():
+                    plist_path.unlink()
+                    log_message("macOS LaunchAgent removed", "INFO")
+            return True
+        except Exception as e:
+            log_message(f"Failed to update macOS LaunchAgent: {e}", "ERROR")
+            return False
+    elif sys.platform.startswith("linux"):
+        desktop_path = get_startup_file_path()
+        if not desktop_path:
+            return False
+        try:
+            if enable:
+                desktop_path.parent.mkdir(parents=True, exist_ok=True)
+                exec_cmd = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" "{launcher_path}"'
+                desktop_content = f"""[Desktop Entry]
+Type=Application
+Name=HA Battery Monitor
+Comment=Real-time Battery Monitoring
+Exec={exec_cmd}
+Icon=battery
+Terminal=false
+Categories=Utility;
+"""
+                desktop_path.write_text(desktop_content, encoding="utf-8")
+                log_message("Linux autostart desktop file registered", "INFO")
+            else:
+                if desktop_path.exists():
+                    desktop_path.unlink()
+                    log_message("Linux autostart desktop file removed", "INFO")
+            return True
+        except Exception as e:
+            log_message(f"Failed to update Linux autostart desktop file: {e}", "ERROR")
+            return False
+    return False
 
 
 BEEP_FREQUENCY = 1000
@@ -746,6 +823,45 @@ def show_win10_toast_notification(title: str, message: str, alert_level: str = "
         return False
 
 
+def show_macos_notification(title: str, message: str, alert_level: str = "info") -> bool:
+    """Show native macOS notification via osascript."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        clean_title = title.replace('"', '\\"')
+        clean_msg = message.replace('"', '\\"')
+        cmd = ["osascript", "-e", f'display notification "{clean_msg}" with title "{clean_title}"']
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception as e:
+        log_message(f"macOS notification failed: {e}", "ERROR")
+        return False
+
+
+def show_linux_notification(title: str, message: str, alert_level: str = "info") -> bool:
+    """Show native Linux desktop notification via notify-send or desktop utilities."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        urgency = "critical" if ("critical" in alert_level.lower() or "20%" in alert_level.lower()) else "normal"
+        if shutil.which("notify-send"):
+            cmd = ["notify-send", "-u", urgency, "-a", "HA Battery Monitor", title, message]
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        elif shutil.which("zenity"):
+            cmd = ["zenity", "--notification", f"--text={title}: {message}"]
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        elif shutil.which("kdialog"):
+            cmd = ["kdialog", "--passivepopup", f"{title}\n{message}", "5"]
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        return False
+    except Exception as e:
+        log_message(f"Linux notification failed: {e}", "ERROR")
+        return False
+
+
 def show_simple_notification(title: str, message: str) -> bool:
     """Show simple message box notification as fallback."""
     if os.name != "nt":
@@ -763,57 +879,104 @@ def show_simple_notification(title: str, message: str) -> bool:
 
 
 def show_notification(message: str, alert_level: str = "info"):
-    """Show a notification using multiple fallback methods with enhanced styling."""
+    """Show a notification using multiple fallback methods with enhanced styling across platforms."""
     title = "🔋 HA Battery Monitor"
     try:
-        if show_win10_toast_notification(title, message, alert_level):
-            log_message(f"Toast notification sent: {message}", "INFO")
-            return
-        if show_native_notification(title, message, alert_level):
-            log_message(f"Balloon notification sent: {message}", "INFO")
-            return
-        if show_simple_notification(title, message):
-            log_message(f"MessageBox notification sent: {message}", "INFO")
-            return
+        if os.name == "nt":
+            if show_win10_toast_notification(title, message, alert_level):
+                log_message(f"Toast notification sent: {message}", "INFO")
+                return
+            if show_native_notification(title, message, alert_level):
+                log_message(f"Balloon notification sent: {message}", "INFO")
+                return
+            if show_simple_notification(title, message):
+                log_message(f"MessageBox notification sent: {message}", "INFO")
+                return
+        elif sys.platform == "darwin":
+            if show_macos_notification(title, message, alert_level):
+                log_message(f"macOS notification sent: {message}", "INFO")
+                return
+        elif sys.platform.startswith("linux"):
+            if show_linux_notification(title, message, alert_level):
+                log_message(f"Linux notification sent: {message}", "INFO")
+                return
+
+        # Fallback modal notification if available
+        if tk and messagebox:
+            try:
+                root = tk.Tk()
+                root.withdraw()
+                threading.Thread(
+                    target=lambda: (messagebox.showinfo(title, message), root.destroy()),
+                    daemon=True
+                ).start()
+                return
+            except Exception:
+                pass
+
         log_message(f"🔔 NOTIFICATION: {message}", "WARNING")
     except Exception as e:
         log_message(f"All notification methods failed: {e}", "ERROR")
 
 
 def detect_headphones_connected() -> Optional[bool]:
-    """Attempt to detect if default audio render device is a headphone/headset."""
-    if os.name != "nt":
-        return None
-    try:
-        ps = """
-        try {
-            $de = New-Object -ComObject MMDeviceEnumerator
-            $eRender = 0
-            $eMultimedia = 1
-            $dev = $de.GetDefaultAudioEndpoint($eRender, $eMultimedia)
-            $name = $dev.FriendlyName
-            $name
-        } catch {
-            # Fallback to empty
-        }
-        """
-        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-        proc = subprocess.Popen(
-            ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", ps],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags
-        )
-        out, _ = proc.communicate(timeout=3)
-        name = out.decode("utf-8", errors="ignore").strip().lower()
-        keywords = ("headphone", "headset", "earbud", "earphones")
-        return any(k in name for k in keywords)
-    except Exception:
-        return None
+    """Attempt to detect if default audio render device is a headphone/headset across Windows, Linux, macOS."""
+    keywords = ("headphone", "headset", "earbud", "earphones", "airpod")
+    if os.name == "nt":
+        try:
+            ps = """
+            try {
+                $de = New-Object -ComObject MMDeviceEnumerator
+                $eRender = 0
+                $eMultimedia = 1
+                $dev = $de.GetDefaultAudioEndpoint($eRender, $eMultimedia)
+                $name = $dev.FriendlyName
+                $name
+            } catch {
+                # Fallback to empty
+            }
+            """
+            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            proc = subprocess.Popen(
+                ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags
+            )
+            out, _ = proc.communicate(timeout=3)
+            name = out.decode("utf-8", errors="ignore").strip().lower()
+            return any(k in name for k in keywords)
+        except Exception:
+            return None
+    elif sys.platform == "darwin":
+        try:
+            proc = subprocess.Popen(
+                ["system_profiler", "SPAudioDataType"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL
+            )
+            out, _ = proc.communicate(timeout=3)
+            text = out.decode("utf-8", errors="ignore").lower()
+            return any(k in text for k in keywords)
+        except Exception:
+            return None
+    elif sys.platform.startswith("linux"):
+        try:
+            proc = subprocess.Popen(
+                ["pactl", "list", "sinks"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL
+            )
+            out, _ = proc.communicate(timeout=3)
+            text = out.decode("utf-8", errors="ignore").lower()
+            return any(k in text for k in keywords)
+        except Exception:
+            return None
+    return None
 
 
 def play_sound(alert_level: str = "info"):
-    """Play a configurable beep sound based on settings and context."""
+    """Play a configurable beep sound based on settings and context across Windows, Linux, macOS."""
     audio_cfg = app_settings.get("audio", {})
     if not audio_cfg.get("enabled", True):
         return
@@ -834,15 +997,72 @@ def play_sound(alert_level: str = "info"):
             dur = max(200, int(dur * factor))
             log_message("Headphones detected: reducing beep intensity", "INFO")
 
-    if winsound is None:
-        log_message("Audio disabled: winsound module not available (not on Windows).", "WARNING")
-        return
+    # Windows
+    if os.name == "nt" and winsound is not None:
+        try:
+            winsound.Beep(freq, dur)
+            log_message(f"Alert sound played ({freq}Hz, {dur}ms)", "INFO")
+            return
+        except Exception as e:
+            log_message(f"Error playing Windows beep: {e}", "ERROR")
 
+    # macOS
+    elif sys.platform == "darwin":
+        try:
+            sound_files = [
+                "/System/Library/Sounds/Ping.aiff",
+                "/System/Library/Sounds/Tink.aiff",
+                "/System/Library/Sounds/Hero.aiff"
+            ]
+            played = False
+            for sf in sound_files:
+                if os.path.exists(sf):
+                    subprocess.Popen(["afplay", sf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    played = True
+                    break
+            if not played:
+                subprocess.Popen(["osascript", "-e", "beep"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log_message("macOS audio alert played", "INFO")
+            return
+        except Exception as e:
+            log_message(f"Error playing macOS sound: {e}", "ERROR")
+
+    # Linux
+    elif sys.platform.startswith("linux"):
+        try:
+            sound_files = [
+                "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga",
+                "/usr/share/sounds/gnome/default/alerts/glass.ogg",
+                "/usr/share/sounds/ubuntu/stereo/system-ready.ogg"
+            ]
+            played = False
+            for sf in sound_files:
+                if os.path.exists(sf):
+                    if shutil.which("paplay"):
+                        subprocess.Popen(["paplay", sf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        played = True
+                        break
+                    elif shutil.which("aplay"):
+                        subprocess.Popen(["aplay", sf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        played = True
+                        break
+            if not played:
+                if shutil.which("canberra-gtk-play"):
+                    subprocess.Popen(["canberra-gtk-play", "-i", "dialog-warning"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+            log_message("Linux audio alert played", "INFO")
+            return
+        except Exception as e:
+            log_message(f"Error playing Linux sound: {e}", "ERROR")
+
+    # Universal terminal bell fallback
     try:
-        winsound.Beep(freq, dur)
-        log_message(f"Alert sound played ({freq}Hz, {dur}ms)", "INFO")
-    except Exception as e:
-        log_message(f"Error playing sound: {e}", "ERROR")
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def check_battery_alerts(battery, last_alert_level: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
