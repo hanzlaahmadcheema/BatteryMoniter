@@ -164,5 +164,67 @@ class TestWindowsStartup(unittest.TestCase):
             mock_winreg.DeleteValue.assert_called_with(mock_key, bm.REG_APP_NAME)
 
 
+class TestCrossPlatformSupport(unittest.TestCase):
+    """Test cross-platform notifications, audio, and startup functionality."""
+
+    def test_macos_notification(self):
+        from unittest.mock import patch
+        with patch.object(bm.sys, "platform", "darwin"), \
+             patch.object(bm.subprocess, "Popen") as mock_popen:
+            res = bm.show_macos_notification("Title", "Message", "info")
+            self.assertTrue(res)
+            self.assertTrue(mock_popen.called)
+
+    def test_linux_notification(self):
+        from unittest.mock import patch
+        with patch.object(bm.sys, "platform", "linux"), \
+             patch.object(bm.shutil, "which", return_value="/usr/bin/notify-send"), \
+             patch.object(bm.subprocess, "Popen") as mock_popen:
+            res = bm.show_linux_notification("Title", "Message", "critical_low")
+            self.assertTrue(res)
+            self.assertTrue(mock_popen.called)
+
+    def test_cross_platform_startup_linux(self):
+        from unittest.mock import patch, MagicMock
+        mock_path = MagicMock()
+        mock_path.parent = MagicMock()
+        with patch.object(bm.os, "name", "posix"), \
+             patch.object(bm.sys, "platform", "linux"), \
+             patch.object(bm, "get_startup_file_path", return_value=mock_path):
+            res = bm.set_startup_enabled(True)
+            self.assertTrue(res)
+            self.assertTrue(mock_path.write_text.called)
+
+    def test_cross_platform_startup_macos(self):
+        from unittest.mock import patch, MagicMock
+        mock_path = MagicMock()
+        mock_path.parent = MagicMock()
+        with patch.object(bm.os, "name", "posix"), \
+             patch.object(bm.sys, "platform", "darwin"), \
+             patch.object(bm, "get_startup_file_path", return_value=mock_path):
+            res = bm.set_startup_enabled(True)
+            self.assertTrue(res)
+            self.assertTrue(mock_path.write_text.called)
+
+    def test_play_sound_cross_platform(self):
+        from unittest.mock import patch
+        # macOS
+        with patch.object(bm.os, "name", "posix"), \
+             patch.object(bm.sys, "platform", "darwin"), \
+             patch.object(bm.os.path, "exists", return_value=True), \
+             patch.object(bm.subprocess, "Popen") as mock_popen:
+            bm.play_sound("warning_low")
+            self.assertTrue(mock_popen.called)
+
+        # Linux
+        with patch.object(bm.os, "name", "posix"), \
+             patch.object(bm.sys, "platform", "linux"), \
+             patch.object(bm.os.path, "exists", return_value=True), \
+             patch.object(bm.shutil, "which", return_value="/usr/bin/paplay"), \
+             patch.object(bm.subprocess, "Popen") as mock_popen:
+            bm.play_sound("critical_low")
+            self.assertTrue(mock_popen.called)
+
+
 if __name__ == '__main__':
     unittest.main()
