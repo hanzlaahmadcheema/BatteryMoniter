@@ -24,6 +24,9 @@ class TrayApp:
 
         self.action_check = QAction("Check Now")
         self.action_pause = QAction("Pause Monitoring")
+        self.action_startup = QAction("Start with Windows")
+        self.action_startup.setCheckable(True)
+        self.action_startup.setChecked(bm.is_startup_enabled())
         self.action_snooze_30 = QAction("Snooze 30 min")
         self.action_snooze_60 = QAction("Snooze 60 min")
         self.action_snooze_120 = QAction("Snooze 120 min")
@@ -32,6 +35,7 @@ class TrayApp:
 
         self.action_check.triggered.connect(self.check_now)
         self.action_pause.triggered.connect(self.toggle_pause)
+        self.action_startup.triggered.connect(self.toggle_startup)
         self.action_settings.triggered.connect(self.open_settings)
         self.action_quit.triggered.connect(self.quit)
 
@@ -46,6 +50,7 @@ class TrayApp:
 
         self.menu.addAction(self.action_check)
         self.menu.addAction(self.action_pause)
+        self.menu.addAction(self.action_startup)
         self.menu.addMenu(snooze_menu)
         self.menu.addSeparator()
         self.menu.addAction(self.action_settings)
@@ -138,6 +143,17 @@ class TrayApp:
             bm.show_notification("Monitoring paused" if adv["paused"] else "Monitoring resumed", alert_level="info")
         except Exception as e:
             self.tray.showMessage("HA Battery Monitor", f"Pause toggle failed: {e}", QSystemTrayIcon.MessageIcon.Critical, 3000)
+
+    def toggle_startup(self, checked: bool):
+        try:
+            bm.set_startup_enabled(checked)
+            adv = bm.app_settings.setdefault("advanced", {})
+            adv["start_with_windows"] = checked
+            bm.save_settings()
+            msg = "Start with Windows enabled" if checked else "Start with Windows disabled"
+            self.tray.showMessage("HA Battery Monitor", msg, QSystemTrayIcon.MessageIcon.Information, 3000)
+        except Exception as e:
+            self.tray.showMessage("HA Battery Monitor", f"Failed to toggle startup: {e}", QSystemTrayIcon.MessageIcon.Critical, 3000)
 
     def open_settings(self):
         try:

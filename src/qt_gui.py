@@ -59,6 +59,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "advanced": {
         "paused": False,
+        "start_with_windows": False,
     }
 }
 
@@ -240,6 +241,15 @@ class MainWindow(QMainWindow):
         self.pause_checkbox.setChecked(bool(self.settings.get("advanced", {}).get("paused", False)))
         self.pause_checkbox.toggled.connect(self.on_toggle_pause)
         header.addWidget(self.pause_checkbox)
+
+        self.startup_checkbox = QCheckBox("Start with Windows")
+        try:
+            from battery_monitor import is_startup_enabled
+            self.startup_checkbox.setChecked(is_startup_enabled())
+        except Exception:
+            self.startup_checkbox.setChecked(bool(self.settings.get("advanced", {}).get("start_with_windows", False)))
+        self.startup_checkbox.toggled.connect(self.on_toggle_startup)
+        header.addWidget(self.startup_checkbox)
 
         root.addLayout(header)
 
@@ -588,6 +598,15 @@ class MainWindow(QMainWindow):
 
     def on_toggle_pause(self, checked: bool):
         self.settings.setdefault("advanced", {})["paused"] = bool(checked)
+        save_settings(self.settings)
+
+    def on_toggle_startup(self, checked: bool):
+        try:
+            from battery_monitor import set_startup_enabled
+            set_startup_enabled(bool(checked))
+        except Exception:
+            pass
+        self.settings.setdefault("advanced", {})["start_with_windows"] = bool(checked)
         save_settings(self.settings)
 
     def apply_theme(self, theme_key: str):

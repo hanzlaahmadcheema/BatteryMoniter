@@ -131,5 +131,38 @@ class TestSanitization(unittest.TestCase):
         self.assertIn('&amp;', escaped)
 
 
+class TestWindowsStartup(unittest.TestCase):
+    """Test Windows startup registration and status checks."""
+
+    def test_startup_status_query(self):
+        enabled = bm.is_startup_enabled()
+        self.assertIsInstance(enabled, bool)
+
+    def test_startup_lifecycle_mocked(self):
+        from unittest.mock import patch, MagicMock
+        with patch.object(bm, 'winreg', create=True) as mock_winreg, \
+             patch.object(bm.os, 'name', 'nt'):
+            mock_key = MagicMock()
+            mock_winreg.OpenKey.return_value.__enter__.return_value = mock_key
+            mock_winreg.HKEY_CURRENT_USER = 1
+            mock_winreg.KEY_SET_VALUE = 2
+            mock_winreg.KEY_READ = 1
+            mock_winreg.REG_SZ = 1
+            mock_winreg.QueryValueEx.return_value = ("command", 1)
+
+            # Test query enabled
+            self.assertTrue(bm.is_startup_enabled())
+
+            # Test set enabled
+            res_enable = bm.set_startup_enabled(True)
+            self.assertTrue(res_enable)
+            self.assertTrue(mock_winreg.SetValueEx.called)
+
+            # Test set disabled
+            res_disable = bm.set_startup_enabled(False)
+            self.assertTrue(res_disable)
+            mock_winreg.DeleteValue.assert_called_with(mock_key, bm.REG_APP_NAME)
+
+
 if __name__ == '__main__':
     unittest.main()
