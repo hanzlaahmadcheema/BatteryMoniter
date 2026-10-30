@@ -56,6 +56,12 @@ battery_config.json
 *.tmp
 *.lock
 
+# Logs
+*.log
+*.log.*
+*.out
+logs/
+
 # Virtual environments
 .env
 .venv
